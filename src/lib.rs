@@ -614,6 +614,7 @@ mod zig_tests {
     use pretty_assertions::assert_eq;
     use rustix::fd::AsRawFd;
     use rustix::fs::{self, Mode, OFlags, CWD};
+    use rustix::io::Errno;
     use rustix::{
         // TODO: the only place we use these constants, is in these tests?
         io_uring::{
@@ -1036,7 +1037,6 @@ mod zig_tests {
     fn openat() {
         let mut ring = IoUring::new(1).unwrap();
         let tmp = tempfile::TempDir::new().unwrap();
-        //let tmp = std::fs::File::open(tmp.path()).unwrap();
         let tmp = fs::openat(
             CWD,
             tmp.path(),
@@ -1075,6 +1075,34 @@ mod zig_tests {
         assert_eq!(cqe.user_data.u64_(), 0x33333333);
         assert!(cqe.res > 0);
         assert_eq!(cqe.flags, IoringCqeFlags::empty());
+
+        assert_ring_clean(&mut ring);
+    }
+
+    #[test]
+    fn close() {
+        let mut ring = IoUring::new(1).unwrap();
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = "test_io_uring_close";
+        let fd = temp_file(&tmp, path);
+        let raw_fd = fd.as_raw_fd();
+
+        let sqe = ring.get_sqe().unwrap();
+        sqe.prep_close(0x44444444, fd);
+        assert_eq!(sqe.opcode, IoringOp::Close);
+        assert_eq!(sqe.fd, raw_fd);
+        assert_eq!(unsafe { ring.submit() }, Ok(1));
+
+        let cqe = unsafe { ring.copy_cqe() }.unwrap();
+        assert_eq!(
+            cqe.res,
+            0,
+            "Close failed: {:?}",
+            cqe.res.checked_neg().map(Errno::from_raw_os_error)
+        );
+        assert_eq!(cqe.user_data.u64_(), 0x44444444);
+        assert!(cqe.flags.is_empty());
 
         assert_ring_clean(&mut ring);
     }

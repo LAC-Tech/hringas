@@ -24,7 +24,7 @@ It's heavily based off of std.os.linux.IoUring.zig, but also takes some pointers
 | splice/read                                    | ✅     |
 | write_fixed/read_fixed                         | ✅     |
 | openat                                         | ✅     |
-| close                                          | ❌     |
+| close                                          | ✅     |
 | accept/connect/send/recv                       | ❌     |
 | sendmsg/recvmsg                                | ❌     |
 | timeout (after a relative time)                | ❌     |

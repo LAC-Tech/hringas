@@ -1,5 +1,5 @@
 use core::ffi::{c_void, CStr};
-use rustix::fd::{AsRawFd, BorrowedFd, RawFd};
+use rustix::fd::{AsRawFd, BorrowedFd, IntoRawFd, OwnedFd, RawFd};
 use rustix::fs::{Mode, OFlags};
 use rustix::io::ReadWriteFlags;
 use rustix::io_uring::IoringOp::*;
@@ -225,6 +225,13 @@ impl Sqe {
         self.fd = fd.as_raw_fd();
         self.set_buf(path.as_ptr(), mode.as_raw_mode() as usize, 0);
         self.op_flags.open_flags = flags;
+        self.user_data.u64_ = user_data;
+    }
+
+    /// Unlike other methods we take an OwnedFd here - should not be used after.
+    pub fn prep_close(&mut self, user_data: u64, fd: OwnedFd) {
+        self.opcode = Close;
+        self.fd = fd.into_raw_fd();
         self.user_data.u64_ = user_data;
     }
 }

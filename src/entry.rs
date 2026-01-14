@@ -9,6 +9,7 @@ use rustix::io_uring::{
     op_flags_union, splice_fd_in_or_file_index_or_addr_len_union,
     IoringCqeFlags, IoringOp, IoringSqeFlags,
 };
+use rustix::net::SocketAddrAny;
 
 /// An io_uring Completion Queue Entry.
 ///
@@ -232,6 +233,21 @@ impl Sqe {
     pub fn prep_close(&mut self, user_data: u64, fd: OwnedFd) {
         self.opcode = Close;
         self.fd = fd.into_raw_fd();
+        self.user_data.u64_ = user_data;
+    }
+
+    pub fn prep_accept(
+        &mut self,
+        user_data: u64,
+        fd: BorrowedFd,
+        addr: &mut SocketAddrAny,
+        flags: ReadWriteFlags,
+    ) {
+        self.opcode = Accept;
+        self.fd = fd.as_raw_fd();
+        // TODO I am not sure of this
+        self.set_buf(addr.as_mut_ptr(), 0, addr.addr_len().into());
+        self.op_flags.rw_flags = flags;
         self.user_data.u64_ = user_data;
     }
 }

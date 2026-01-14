@@ -624,6 +624,13 @@ mod zig_tests {
     };
     use tempfile::{tempdir, TempDir};
 
+    use rustix::fd::{AsFd, OwnedFd};
+    use rustix::net::{
+        bind, getsockname, listen, socket_with, sockopt, AddressFamily,
+        Ipv4Addr, SocketAddr, SocketAddrAny, SocketAddrV4, SocketFlags,
+        SocketType,
+    };
+
     // It's just a u16 in the C struct
     fn ioprio_to_u16(i: ioprio_union) -> u16 {
         // 100% safe, 'cause Stone Cold said so
@@ -1105,5 +1112,66 @@ mod zig_tests {
         assert!(cqe.flags.is_empty());
 
         assert_ring_clean(&mut ring);
+    }
+
+    fn create_listener_socket(
+        ip: rustix::net::Ipv4Addr,
+        port: u16,
+    ) -> rustix::io::Result<(OwnedFd, SocketAddrAny)> {
+        const KERNEL_BACKLOG: i32 = 1;
+
+        // Construct SocketAddr directly
+        let address = SocketAddr::V4(SocketAddrV4::new(ip, port));
+
+        let family = match address {
+            SocketAddr::V4(_) => AddressFamily::INET,
+            SocketAddr::V6(_) => AddressFamily::INET6,
+        };
+
+        let listener_socket = rustix::net::socket_with(
+            family,
+            SocketType::STREAM,
+            SocketFlags::CLOEXEC,
+            None,
+        )?;
+
+        rustix::net::sockopt::set_socket_reuseaddr(&listener_socket, true)?;
+        rustix::net::bind(&listener_socket, &address)?;
+        rustix::net::listen(&listener_socket, KERNEL_BACKLOG)?;
+
+        // Get the OS-chosen address (after bind)
+        let actual_address = rustix::net::getsockname(&listener_socket)?;
+
+        Ok((listener_socket, actual_address))
+    }
+
+    /// Used for testing server/client interactions.
+    struct SockTestHarness {
+        // In the Zig def, this was not closed in the close method
+        listener: OwnedFd,
+        server: OwnedFd,
+        client: OwnedFd,
+    }
+
+    impl<'a> SockTestHarness<'a> {
+        fn new(ring: &mut IoUring) -> io::Result<Self> {
+            let (listener_socket, address) =
+                create_listener_socket(Ipv4Addr::LOCALHOST, 0)?;
+
+            // Submit 1 accept
+            let mut addr: SocketAddrAny;
+            let sqe = ring.get_sqe().unwrap();
+            sqe.prep_accept(
+                0xaaaaaaaa,
+                listener_socket.as_fd(),
+                &mut addr,
+                ReadWriteFlags::empty(),
+            );
+        }
+    }
+
+    #[test]
+    fn accept_connect_send_recv() {
+        let mut ring = IoUring::new(16).unwrap();
     }
 }

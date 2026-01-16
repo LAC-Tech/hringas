@@ -236,6 +236,7 @@ impl Sqe {
         self.user_data.u64_ = user_data;
     }
 
+    /*
     pub fn prep_accept(
         &mut self,
         user_data: u64,
@@ -250,4 +251,17 @@ impl Sqe {
         self.op_flags.rw_flags = flags;
         self.user_data.u64_ = user_data;
     }
+
+    pub fn prep_connect(
+        &mut self,
+        user_data: u64,
+        fd: BorrowedFd,
+        addr: &SocketAddrAny,
+    ) {
+        self.opcode = Connect;
+        self.fd = fd.as_raw_fd();
+        self.set_buf(addr.as_ptr(), 0, addr.addr_len().into());
+        self.user_data.u64_ = user_data;
+    }
+    */
 }

@@ -610,6 +610,7 @@ mod test_ioring_op_uring_cmd {
 mod zig_tests {
     use super::*;
     use core::ffi::c_void;
+    use core::mem::MaybeUninit;
     use err::*;
     use pretty_assertions::assert_eq;
     use rustix::fd::AsRawFd;
@@ -622,11 +623,12 @@ mod zig_tests {
             IoringSqeFlags,
         },
     };
+    use std::os::fd::FromRawFd;
     use tempfile::{tempdir, TempDir};
 
     use rustix::fd::{AsFd, OwnedFd};
     use rustix::net::{
-        bind, getsockname, listen, socket_with, sockopt, AddressFamily,
+        accept, bind, getsockname, listen, socket_with, sockopt, AddressFamily,
         Ipv4Addr, SocketAddr, SocketAddrAny, SocketAddrV4, SocketFlags,
         SocketType,
     };
@@ -1120,16 +1122,11 @@ mod zig_tests {
     ) -> rustix::io::Result<(OwnedFd, SocketAddrAny)> {
         const KERNEL_BACKLOG: i32 = 1;
 
-        // Construct SocketAddr directly
-        let address = SocketAddr::V4(SocketAddrV4::new(ip, port));
-
-        let family = match address {
-            SocketAddr::V4(_) => AddressFamily::INET,
-            SocketAddr::V6(_) => AddressFamily::INET6,
-        };
+        let address: SocketAddrAny =
+            SocketAddr::V4(SocketAddrV4::new(ip, port)).into();
 
         let listener_socket = rustix::net::socket_with(
-            family,
+            address.address_family(),
             SocketType::STREAM,
             SocketFlags::CLOEXEC,
             None,
@@ -1153,22 +1150,55 @@ mod zig_tests {
         client: OwnedFd,
     }
 
-    impl<'a> SockTestHarness<'a> {
+    // TODO: finish this when you have prep_accept and prep_connect worked out
+    /*
+    impl SockTestHarness {
         fn new(ring: &mut IoUring) -> io::Result<Self> {
-            let (listener_socket, address) =
+            let (listener, address) =
                 create_listener_socket(Ipv4Addr::LOCALHOST, 0)?;
 
             // Submit 1 accept
-            let mut addr: SocketAddrAny;
+            //let mut addr = MaybeUninit::<SocketAddrAny>::uninit();
+            let mut addr: &mut SocketAddrAny = unsafe { core::mem::zeroed() };
             let sqe = ring.get_sqe().unwrap();
             sqe.prep_accept(
                 0xaaaaaaaa,
-                listener_socket.as_fd(),
+                listener,
                 &mut addr,
+                //unsafe { addr.assume_init_mut() },
                 ReadWriteFlags::empty(),
             );
+
+            let client = rustix::net::socket_with(
+                address.address_family(),
+                SocketType::STREAM,
+                SocketFlags::CLOEXEC,
+                None,
+            )?;
+            let sqe = ring.get_sqe().unwrap();
+            sqe.prep_connect(0xcccccccc, client.as_fd(), &address);
+
+            assert_eq!(unsafe { ring.submit() }, Ok(2));
+
+            let mut cqes = [Cqe::default(); 2];
+            assert_eq!(unsafe { ring.copy_cqes(&mut cqes, 2) }, Ok(2));
+            // accept has the lower user data
+            cqes.sort_by(|a, b| a.user_data.u64_().cmp(&b.user_data.u64_()));
+            let [cqe_accept, cqe_connect] = cqes;
+            assert!(cqe_accept.res > 0);
+            assert_eq!(cqe_connect.res, 0);
+
+            assert_eq!(cqe_accept.user_data.u64_(), 0xaaaaaaaa);
+            assert_eq!(cqe_accept.flags, IoringCqeFlags::empty());
+
+            assert_eq!(cqe_accept.user_data.u64_(), 0xcccccccc);
+
+            // All good
+            let server = unsafe { OwnedFd::from_raw_fd(cqe_accept.res) };
+            Ok(Self { listener, server, client })
         }
     }
+    */
 
     #[test]
     fn accept_connect_send_recv() {

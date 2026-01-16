@@ -162,29 +162,29 @@ impl IoUring {
     /// Returns a reference to a vacant SQE, or an error if the submission
     /// queue is full. We follow the implementation (and atomics) of
     /// liburing's `io_uring_get_sqe()`, EXCEPT that the fields are zeroed out.
-    pub fn get_sqe(&mut self) -> Result<&mut Sqe, err::GetSqe> {
+    pub fn get_sqe(&mut self) -> Option<&mut Sqe> {
         let sqe = self.get_sqe_raw()?;
         *sqe = Sqe::default();
-        Ok(sqe)
+        Some(sqe)
     }
 
     /// Returns a reference to a vacant SQE, or an error if the submission
     /// queue is full. We follow the implementation (and atomics) of
     /// liburing's `io_uring_get_sqe()` exactly.
-    pub fn get_sqe_raw(&mut self) -> Result<&mut Sqe, err::GetSqe> {
+    pub fn get_sqe_raw(&mut self) -> Option<&mut Sqe> {
         let head = self.shared.sq_head();
         // Remember that these head and tail offsets wrap around every four
         // billion operations. We must therefore use wrapping addition
         // and subtraction to avoid a runtime crash.
         let next = self.sq.sqe_tail.wrapping_add(1);
         if next.wrapping_sub(head) > self.sq.entries {
-            return Err(err::GetSqe::SubmissionQueueFull);
+            return None;
         }
 
         let index = (self.sq.sqe_tail & self.sq.mask) as usize;
         let sqe = &mut self.sq.sqes[index];
         self.sq.sqe_tail = next;
-        Ok(sqe)
+        Some(sqe)
     }
 
     /// Submits the SQEs acquired via [`Self::get_sqe()`] to the kernel. You can
@@ -550,10 +550,22 @@ pub mod err {
         SingleMmapUnsupported,
         Os(Errno),
     }
+}
 
-    #[derive(Debug, Eq, PartialEq)]
-    pub enum GetSqe {
-        SubmissionQueueFull,
+#[cfg(test)]
+mod misc_tests {
+    use super::*;
+
+    #[test]
+    fn drop_sqe_before_submitting() {
+        let mut ring = IoUring::new(1).unwrap();
+        {
+            let sqe = ring.get_sqe().unwrap();
+            assert_eq!(sqe.opcode, IoringOp::Nop);
+        }
+        assert_eq!(unsafe { ring.submit() }, Ok(1));
+        let cqe = unsafe { ring.copy_cqe() }.unwrap();
+        assert_eq!(cqe, Cqe::default());
     }
 }
 
@@ -764,7 +776,7 @@ mod zig_tests {
 
         // Hack because Ok branch does not implement debug..
         assert!(
-            matches!(ring.get_sqe(), Err(GetSqe::SubmissionQueueFull)),
+            matches!(ring.get_sqe(), None),
             "expected submission queue to be full"
         );
         assert_eq!(unsafe { ring.submit() }, Ok(1));

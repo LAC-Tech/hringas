@@ -38,13 +38,10 @@ pub use rustix::io_uring::{
 };
 
 use core::ptr::null;
-use core::{assert, assert_eq, assert_ne, cmp};
-use rustix::fd::{AsFd, OwnedFd};
+use core::*;
+use rustix::fd::*;
 use rustix::io;
-use rustix::io_uring::{
-    io_uring_enter, io_uring_register, io_uring_setup, IoringFeatureFlags,
-    IoringRegisterOp, IoringSetupFlags, IoringSqFlags,
-};
+use rustix::io_uring::*;
 
 /// The main entry point to the library.
 #[derive(Debug)]
@@ -609,13 +606,11 @@ mod test_ioring_op_uring_cmd {
 #[cfg(test)]
 mod zig_tests {
     use super::*;
-    use core::ffi::c_void;
-    use core::mem::MaybeUninit;
+    use core::ffi::*;
     use err::*;
     use pretty_assertions::assert_eq;
-    use rustix::fd::AsRawFd;
-    use rustix::fs::{self, Mode, OFlags, CWD};
     use rustix::io::Errno;
+    use rustix::*;
     use rustix::{
         // TODO: the only place we use these constants, is in these tests?
         io_uring::{
@@ -623,15 +618,9 @@ mod zig_tests {
             IoringSqeFlags,
         },
     };
-    use std::os::fd::FromRawFd;
     use tempfile::{tempdir, TempDir};
 
-    use rustix::fd::{AsFd, OwnedFd};
-    use rustix::net::{
-        accept, bind, getsockname, listen, socket_with, sockopt, AddressFamily,
-        Ipv4Addr, SocketAddr, SocketAddrAny, SocketAddrV4, SocketFlags,
-        SocketType,
-    };
+    use rustix::net::*;
 
     // It's just a u16 in the C struct
     fn ioprio_to_u16(i: ioprio_union) -> u16 {
@@ -641,7 +630,7 @@ mod zig_tests {
 
     fn temp_file(dir: &TempDir, path: &'static str) -> OwnedFd {
         fs::openat(
-            CWD,
+            fs::CWD,
             dir.path().join(path),
             OFlags::CREATE | OFlags::RDWR | OFlags::TRUNC,
             Mode::RUSR | Mode::WUSR,
@@ -748,8 +737,9 @@ mod zig_tests {
     #[test]
     fn readv() {
         let mut ring = IoUring::new(1).unwrap();
-        let fd = fs::openat(CWD, "/dev/zero", OFlags::RDONLY, Mode::empty())
-            .unwrap();
+        let fd =
+            fs::openat(fs::CWD, "/dev/zero", OFlags::RDONLY, Mode::empty())
+                .unwrap();
 
         // Linux Kernel 5.4 supports IORING_REGISTER_FILES but not sparse fd
         // sets (i.e. an fd of -1). Linux Kernel 5.5 adds support for
@@ -1047,7 +1037,7 @@ mod zig_tests {
         let mut ring = IoUring::new(1).unwrap();
         let tmp = tempfile::TempDir::new().unwrap();
         let tmp = fs::openat(
-            CWD,
+            fs::CWD,
             tmp.path(),
             OFlags::RDONLY | OFlags::CLOEXEC,
             Mode::empty(),

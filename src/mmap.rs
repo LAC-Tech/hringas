@@ -1,15 +1,12 @@
 use core::cmp;
 use core::ffi::c_void;
 use core::mem::size_of;
-use core::ops::{Deref, DerefMut};
+use core::ops::*;
 use core::ptr;
-use core::sync::atomic::{AtomicU32, Ordering};
-use rustix::fd::BorrowedFd;
-use rustix::io_uring::{
-    io_cqring_offsets, io_sqring_offsets, io_uring_params, IoringSqFlags,
-    IORING_OFF_CQ_RING, IORING_OFF_SQES, IORING_OFF_SQ_RING,
-};
-use rustix::{io, mm};
+use core::sync::atomic::*;
+use rustix::fd::*;
+use rustix::io_uring::*;
+use rustix::*;
 use std::os::fd::AsFd;
 
 use crate::entry::*;

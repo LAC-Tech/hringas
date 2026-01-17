@@ -730,7 +730,9 @@ mod zig_tests {
             ioprio_to_u16(sqe.ioprio),
             ioprio_to_u16(ioprio_union::default())
         );
-        assert_eq!(sqe.fd, 0);
+        // This is 0 in zig, but we follow the liburing model of setting it to
+        // an invalid fd rather than just zeroing it out
+        assert_eq!(sqe.fd, -1);
         assert_eq!(sqe.off(), 0);
         assert_eq!(sqe.addr(), io_uring_ptr::null());
         assert_eq!(

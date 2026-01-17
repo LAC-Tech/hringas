@@ -9,7 +9,7 @@ use rustix::io_uring::*;
 use rustix::*;
 use std::os::fd::AsFd;
 
-use crate::entry::*;
+use crate::{Cqe, Sqe};
 
 // Sanity check that we can cast from u32 to usize
 const _: () = assert!(usize::BITS >= 32);

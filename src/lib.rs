@@ -159,6 +159,12 @@ impl IoUring {
         self.fd.as_fd()
     }
 
+    pub fn enqueue(&mut self, prep: impl FnOnce(&mut Sqe)) -> Option<&mut Sqe> {
+        let sqe = self.get_sqe_raw()?;
+        prep(sqe);
+        Some(sqe)
+    }
+
     /// Returns a reference to a vacant SQE, or an error if the submission
     /// queue is full. We follow the implementation (and atomics) of
     /// liburing's `io_uring_get_sqe()`, EXCEPT that the fields are zeroed out.
@@ -599,8 +605,9 @@ mod test_ioring_op_uring_cmd {
 
         let mut ring = IoUring::new_with_params(2, &mut params).unwrap();
 
-        ring.get_sqe().unwrap().prep_nop(0);
-        ring.get_sqe().unwrap().prep_nop(1);
+        ring.enqueue(prep_nop(0)).unwrap();
+        ring.enqueue(prep_nop(1)).unwrap();
+
         let submitted = unsafe { ring.submit_and_wait(2) };
         assert_eq!(submitted, Ok(2));
 
@@ -681,9 +688,7 @@ mod zig_tests {
     #[test]
     fn nop() {
         let mut ring = IoUring::new(1).unwrap();
-        let sqe = ring.get_sqe().unwrap();
-        sqe.prep_nop(0xaaaaaaaa);
-
+        let sqe = ring.enqueue(prep_nop(0xaaaaaaaa)).unwrap();
         assert_eq!(sqe.opcode, IoringOp::Nop);
         assert_eq!(sqe.flags, IoringSqeFlags::empty());
         assert_eq!(
@@ -730,8 +735,7 @@ mod zig_tests {
         assert_eq!(ring.shared.cq_head(), 1);
         assert_eq!(ring.cq_ready(), 0);
 
-        let sqe_barrier = ring.get_sqe().unwrap();
-        sqe_barrier.prep_nop(0xbbbbbbbb);
+        let sqe_barrier = ring.enqueue(prep_nop(0xbbbbbbbb)).unwrap();
         sqe_barrier.flags.set(IoringSqeFlags::IO_DRAIN, true);
         assert_eq!(unsafe { ring.submit() }, Ok(1));
         let cqe = unsafe { ring.copy_cqe().unwrap() };
@@ -818,8 +822,10 @@ mod zig_tests {
             sqe.flags.set(IoringSqeFlags::IO_LINK, true);
         }
         {
-            let sqe = ring.get_sqe().unwrap();
-            sqe.prep_fsync(0xeeeeeeee, fd.as_fd(), ReadWriteFlags::empty());
+            let prep =
+                prep_fsync(0xeeeeeeee, fd.as_fd(), ReadWriteFlags::empty());
+            let sqe = ring.enqueue(prep).unwrap();
+
             assert_eq!(sqe.opcode, IoringOp::Fsync);
             assert_eq!(sqe.fd, fd.as_raw_fd());
             sqe.flags.set(IoringSqeFlags::IO_LINK, true);

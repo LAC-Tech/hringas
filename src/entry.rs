@@ -1,4 +1,5 @@
 use core::ffi::*;
+use core::ptr::*;
 use rustix::fd::*;
 use rustix::fs::*;
 use rustix::io::ReadWriteFlags;
@@ -42,6 +43,39 @@ pub struct Sqe {
     pub addr3_or_cmd: addr3_or_cmd_union,
 }
 
+// Closures let us have a more declarative API. Rust compiles them efficiently
+// Note these are done rather differently than IoUring.zig - specifically they
+// zero out more fields.
+//
+// Jens Axboe:
+// "one reason for that is that fields that aren't used could be used in the
+// future, and ensuring they are zero and  having the kernel verify they are
+// zero makes it so you can actually use one  of those fields in the future for
+// functionality, flags, etc"
+
+pub fn prep_nop(user_data: u64) -> impl FnOnce(&mut Sqe) {
+    move |sqe| {
+        sqe.opcode = Nop;
+        sqe.fd = -1;
+        sqe.clear_buf();
+        sqe.user_data.u64_ = user_data;
+    }
+}
+
+pub fn prep_fsync<'a>(
+    user_data: u64,
+    fd: BorrowedFd<'a>,
+    flags: ReadWriteFlags,
+) -> impl FnOnce(&mut Sqe) + use<'a> {
+    move |sqe| {
+        sqe.opcode = Fsync;
+        sqe.fd = fd.as_raw_fd();
+        sqe.clear_buf();
+        sqe.op_flags.rw_flags = flags;
+        sqe.user_data.u64_ = user_data;
+    }
+}
+
 // IoUring.zig has top level functions like read, nop etc inside the main struct
 // But I think it's a lot more ergonomic to keep the IoUring interface small,
 // and also make it clear to people that what you are doing is mutating SQEs.
@@ -63,23 +97,6 @@ impl Sqe {
         unsafe { self.off_or_addr2.off }
     }
 
-    pub fn prep_nop(&mut self, user_data: u64) {
-        self.opcode = Nop;
-        self.user_data = user_data.into();
-    }
-
-    pub fn prep_fsync(
-        &mut self,
-        user_data: u64,
-        fd: BorrowedFd,
-        flags: ReadWriteFlags,
-    ) {
-        self.opcode = Fsync;
-        self.fd = fd.as_raw_fd();
-        self.op_flags.rw_flags = flags;
-        self.user_data.u64_ = user_data;
-    }
-
     pub fn set_len(&mut self, len: usize) {
         self.len.len =
             len.try_into().expect("io_uring requires lengths to fit in a u32");
@@ -89,6 +106,10 @@ impl Sqe {
         self.addr_or_splice_off_in.addr = io_uring_ptr::new(ptr as *mut c_void);
         self.set_len(len);
         self.off_or_addr2.off = offset;
+    }
+
+    pub fn clear_buf(&mut self) {
+        self.set_buf(null::<c_long>(), 0, 0); // NULL is a long in C
     }
 
     pub fn prep_read(

@@ -18,7 +18,7 @@ use crate::Sqe;
 // zero makes it so you can actually use one  of those fields in the future for
 // functionality, flags, etc"
 
-pub fn prep_nop(user_data: u64) -> impl FnOnce(&mut Sqe) {
+pub fn nop(user_data: u64) -> impl FnOnce(&mut Sqe) {
     move |sqe| {
         sqe.opcode = Nop;
         sqe.fd = -1;
@@ -27,7 +27,7 @@ pub fn prep_nop(user_data: u64) -> impl FnOnce(&mut Sqe) {
     }
 }
 
-pub fn prep_fsync<'a>(
+pub fn fsync<'a>(
     user_data: u64,
     fd: BorrowedFd<'a>,
     flags: ReadWriteFlags,

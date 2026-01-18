@@ -23,10 +23,9 @@
 #![doc = include_str!("../examples/readme_no_std.rs")]
 //! ```
 
-pub mod entry;
 mod mmap;
+pub mod prep;
 
-pub use crate::entry::*;
 pub use rustix;
 
 // These form part of the public API
@@ -195,24 +194,15 @@ impl IoUring {
     }
 
     pub fn enqueue(&mut self, prep: impl FnOnce(&mut Sqe)) -> Option<&mut Sqe> {
-        let sqe = self.get_sqe_raw()?;
+        let sqe = self.get_sqe()?;
         prep(sqe);
         Some(sqe)
     }
 
     /// Returns a reference to a vacant SQE, or an error if the submission
     /// queue is full. We follow the implementation (and atomics) of
-    /// liburing's `io_uring_get_sqe()`, EXCEPT that the fields are zeroed out.
-    pub fn get_sqe(&mut self) -> Option<&mut Sqe> {
-        let sqe = self.get_sqe_raw()?;
-        *sqe = Sqe::default();
-        Some(sqe)
-    }
-
-    /// Returns a reference to a vacant SQE, or an error if the submission
-    /// queue is full. We follow the implementation (and atomics) of
     /// liburing's `io_uring_get_sqe()` exactly.
-    pub fn get_sqe_raw(&mut self) -> Option<&mut Sqe> {
+    pub fn get_sqe(&mut self) -> Option<&mut Sqe> {
         let head = self.shared.sq_head();
         // Remember that these head and tail offsets wrap around every four
         // billion operations. We must therefore use wrapping addition
@@ -640,8 +630,8 @@ mod test_ioring_op_uring_cmd {
 
         let mut ring = IoUring::new_with_params(2, &mut params).unwrap();
 
-        ring.enqueue(prep_nop(0)).unwrap();
-        ring.enqueue(prep_nop(1)).unwrap();
+        ring.enqueue(prep::nop(0)).unwrap();
+        ring.enqueue(prep::nop(1)).unwrap();
 
         let submitted = unsafe { ring.submit_and_wait(2) };
         assert_eq!(submitted, Ok(2));
@@ -723,7 +713,7 @@ mod zig_tests {
     #[test]
     fn nop() {
         let mut ring = IoUring::new(1).unwrap();
-        let sqe = ring.enqueue(prep_nop(0xaaaaaaaa)).unwrap();
+        let sqe = ring.enqueue(prep::nop(0xaaaaaaaa)).unwrap();
         assert_eq!(sqe.opcode, IoringOp::Nop);
         assert_eq!(sqe.flags, IoringSqeFlags::empty());
         assert_eq!(
@@ -772,7 +762,7 @@ mod zig_tests {
         assert_eq!(ring.shared.cq_head(), 1);
         assert_eq!(ring.cq_ready(), 0);
 
-        let sqe_barrier = ring.enqueue(prep_nop(0xbbbbbbbb)).unwrap();
+        let sqe_barrier = ring.enqueue(prep::nop(0xbbbbbbbb)).unwrap();
         sqe_barrier.flags.set(IoringSqeFlags::IO_DRAIN, true);
         assert_eq!(unsafe { ring.submit() }, Ok(1));
         let cqe = unsafe { ring.copy_cqe().unwrap() };
@@ -860,7 +850,7 @@ mod zig_tests {
         }
         {
             let prep =
-                prep_fsync(0xeeeeeeee, fd.as_fd(), ReadWriteFlags::empty());
+                prep::fsync(0xeeeeeeee, fd.as_fd(), ReadWriteFlags::empty());
             let sqe = ring.enqueue(prep).unwrap();
 
             assert_eq!(sqe.opcode, IoringOp::Fsync);

@@ -1,7 +1,7 @@
 #![no_std]
 use hringas::rustix::fs::{openat, Mode, OFlags, CWD};
 use hringas::rustix::io;
-use hringas::{prep, Fd, IoUring, ReadBufStack};
+use hringas::{prep, read_buf_stack, Fd, IoUring};
 
 fn main() -> io::Result<()> {
     let mut ring = IoUring::new(8).expect("kernel out of date or wrong params");
@@ -9,7 +9,7 @@ fn main() -> io::Result<()> {
     let fd: Fd =
         openat(CWD, "README.md", OFlags::RDONLY, Mode::empty())?.into();
 
-    let buf = ReadBufStack::<1024>::new();
+    let buf = read_buf_stack::<1024>();
 
     let req = prep::read(0x42, &fd, &buf, 0);
     ring.enqueue(req).expect("submission queue is full");

@@ -1,11 +1,11 @@
-use hringas::{prep, Fd, IoUring, ReadBufHeap};
+use hringas::{prep, read_buf_heap, Fd, IoUring};
 use std::{fs, io};
 
 fn main() -> io::Result<()> {
     let mut ring = IoUring::new(8).expect("kernel out of date or wrong params");
 
     let fd: Fd = fs::File::open("README.md")?.into();
-    let buf = ReadBufHeap::<1024>::new();
+    let buf = read_buf_heap::<1024>();
 
     let req = prep::read(0x42, &fd, &buf, 0);
     ring.enqueue(req).expect("submission queue is full");

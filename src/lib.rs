@@ -132,12 +132,10 @@ pub struct ReadBufStack<'a, const N: usize> {
     _phantom: marker::PhantomData<&'a IoUring>,
 }
 
-impl<'a, const N: usize> ReadBufStack<'a, N> {
-    pub fn new() -> Self {
-        Self {
-            bytes: mem::MaybeUninit::uninit(),
-            _phantom: marker::PhantomData,
-        }
+pub fn read_buf_stack<'a, const N: usize>() -> ReadBufStack<'a, N> {
+    ReadBufStack {
+        bytes: mem::MaybeUninit::uninit(),
+        _phantom: marker::PhantomData,
     }
 }
 
@@ -157,12 +155,10 @@ pub struct ReadBufHeap<'a, const N: usize> {
     _phantom: marker::PhantomData<&'a IoUring>,
 }
 
-impl<'a, const N: usize> ReadBufHeap<'a, N> {
-    pub fn new() -> Self {
-        Self {
-            bytes: Box::new(mem::MaybeUninit::uninit()),
-            _phantom: marker::PhantomData,
-        }
+pub fn read_buf_heap<'a, const N: usize>() -> ReadBufHeap<'a, N> {
+    ReadBufHeap {
+        bytes: Box::new(mem::MaybeUninit::uninit()),
+        _phantom: marker::PhantomData,
     }
 }
 
@@ -969,7 +965,7 @@ mod zig_tests {
 
         const BUF_LEN: usize = 20;
         const BUFFER_WRITE: [u8; BUF_LEN] = [97; BUF_LEN];
-        let buffer_read = ReadBufStack::<BUF_LEN>::new();
+        let buffer_read = read_buf_stack::<BUF_LEN>();
 
         let sqe_write = ring.get_sqe().unwrap();
         sqe_write.prep_write(0x11111111, &fd, &BUFFER_WRITE, 10);
@@ -977,9 +973,8 @@ mod zig_tests {
         assert_eq!(sqe_write.off(), 10);
         sqe_write.flags.set(IoringSqeFlags::IO_LINK, true);
 
-        let sqe_read = ring
-            .enqueue(prep::read(0x22222222, &fd, &buffer_read, 10))
-            .unwrap();
+        let req = prep::read(0x22222222, &fd, &buffer_read, 10);
+        let sqe_read = ring.enqueue(req).unwrap();
         assert_eq!(sqe_read.opcode, IoringOp::Read);
         assert_eq!(sqe_read.off(), 10);
 
@@ -988,11 +983,11 @@ mod zig_tests {
         let cqe_write = ring.copy_cqe().unwrap();
         let cqe_read = ring.copy_cqe().unwrap();
 
-        assert_eq!(cqe_write.user_data.u64_(), 0x11111111);
+        assert_eq!(cqe_write.user_data(), 0x11111111);
         assert_eq!(cqe_write.res, BUFFER_WRITE.len() as i32);
         assert_eq!(cqe_write.flags, IoringCqeFlags::empty());
 
-        assert_eq!(cqe_read.user_data.u64_(), 0x22222222);
+        assert_eq!(cqe_read.user_data(), 0x22222222);
         assert_eq!(cqe_read.res, BUF_LEN as i32);
         assert_eq!(cqe_read.flags, IoringCqeFlags::empty());
 
@@ -1016,7 +1011,7 @@ mod zig_tests {
 
         const BUF_LEN: usize = 20;
         let buffer_write = [97u8; BUF_LEN];
-        let buffer_read = ReadBufStack::<BUF_LEN>::new();
+        let buffer_read = read_buf_stack::<BUF_LEN>();
         assert_eq!(
             rustix::io::write(unsafe { fd_src.read() }, &buffer_write),
             Ok(buffer_write.len())

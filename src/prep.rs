@@ -1,14 +1,15 @@
 use core::ffi::*;
 use core::ptr::*;
-use rustix::fd::*;
+use std::mem;
+//use rustix::fd::*;
 use rustix::fs::*;
 use rustix::io::ReadWriteFlags;
 use rustix::io_uring::IoringOp::*;
 use rustix::io_uring::*;
 
-use crate::Sqe;
+use crate::{Fd, ReadBuf, Sqe};
 
-// Closures let us have a more declarative API. Rust compiles them efficiently
+// This trait let us have a more declarative API.
 // Note these are done rather differently than IoUring.zig - specifically they
 // zero out more fields.
 //
@@ -18,28 +19,93 @@ use crate::Sqe;
 // zero makes it so you can actually use one  of those fields in the future for
 // functionality, flags, etc"
 
-pub fn nop(user_data: u64) -> impl FnOnce(&mut Sqe) {
-    move |sqe| {
+pub trait Prep {
+    fn prep(&self, sqe: &mut Sqe);
+}
+
+pub struct Nop {
+    user_data: u64,
+}
+
+impl Prep for Nop {
+    fn prep(&self, sqe: &mut Sqe) {
         sqe.opcode = Nop;
         sqe.fd = -1;
         sqe.clear_buf();
-        sqe.user_data.u64_ = user_data;
+        sqe.user_data.u64_ = self.user_data;
+    }
+}
+
+pub fn nop(user_data: u64) -> Nop {
+    Nop { user_data }
+}
+
+pub struct Fsync<'a> {
+    user_data: u64,
+    fd: &'a Fd,
+    flags: ReadWriteFlags,
+}
+
+impl<'a> Prep for Fsync<'a> {
+    fn prep(&self, sqe: &mut Sqe) {
+        sqe.opcode = Fsync;
+        sqe.fd = self.fd.as_raw_fd();
+        sqe.clear_buf();
+        sqe.op_flags.rw_flags = self.flags;
+        sqe.user_data.u64_ = self.user_data;
     }
 }
 
 pub fn fsync<'a>(
     user_data: u64,
-    fd: BorrowedFd<'a>,
+    fd: &'a Fd,
     flags: ReadWriteFlags,
-) -> impl FnOnce(&mut Sqe) + use<'a> {
+) -> Fsync<'a> {
+    Fsync { user_data, fd: fd, flags }
+}
+
+pub struct Read<'a, const BUF_LEN: usize, RB: ReadBuf<BUF_LEN>> {
+    user_data: u64,
+    fd: &'a Fd,
+    buf: &'a RB,
+    offset: u64,
+}
+
+impl<'a, const BUF_LEN: usize, RB: ReadBuf<BUF_LEN>> Prep
+    for Read<'a, BUF_LEN, RB>
+{
+    fn prep(&self, sqe: &mut Sqe) {
+        sqe.opcode = Read;
+        sqe.fd = self.fd.as_raw_fd();
+        sqe.set_buf(self.buf.as_ptr(), BUF_LEN, self.offset);
+        sqe.user_data.u64_ = self.user_data;
+    }
+}
+
+pub fn read<'a, const BUF_LEN: usize, RB: ReadBuf<BUF_LEN>>(
+    user_data: u64,
+    fd: &'a Fd,
+    buf: &'a RB,
+    offset: u64,
+) -> Read<'a, BUF_LEN, RB> {
+    Read { user_data, fd, buf, offset }
+}
+
+/*
+pub unsafe fn read<'a, const BUF_LEN: usize>(
+    user_data: u64,
+    fd: BorrowedFd<'a>,
+    buf: &mut impl ReadBuf<BUF_LEN>,
+    offset: u64,
+) -> impl FnOnce(&mut Sqe) + use<'a, BUF_LEN> {
     move |sqe| {
-        sqe.opcode = Fsync;
+        sqe.opcode = Read;
         sqe.fd = fd.as_raw_fd();
-        sqe.clear_buf();
-        sqe.op_flags.rw_flags = flags;
+        sqe.set_buf(buf.as_mut_ptr(), BUF_LEN, offset);
         sqe.user_data.u64_ = user_data;
     }
 }
+*/
 
 // IoUring.zig has top level functions like read, nop etc inside the main struct
 // But I think it's a lot more ergonomic to keep the IoUring interface small,
@@ -77,6 +143,7 @@ impl Sqe {
         self.set_buf(null::<c_long>(), 0, 0); // NULL is a long in C
     }
 
+    /*
     pub fn prep_read(
         &mut self,
         user_data: u64,
@@ -89,11 +156,12 @@ impl Sqe {
         self.set_buf(buf.as_ptr(), buf.len(), offset);
         self.user_data.u64_ = user_data;
     }
+    */
 
     pub fn prep_readv(
         &mut self,
         user_data: u64,
-        fd: BorrowedFd,
+        fd: &Fd,
         iovecs: &[iovec],
         offset: u64,
     ) {
@@ -122,7 +190,7 @@ impl Sqe {
     pub fn prep_write(
         &mut self,
         user_data: u64,
-        fd: BorrowedFd,
+        fd: &Fd,
         buf: &[u8],
         offset: u64,
     ) {
@@ -135,7 +203,7 @@ impl Sqe {
     pub fn prep_writev(
         &mut self,
         user_data: u64,
-        fd: BorrowedFd,
+        fd: &Fd,
         iovecs: &[iovec],
         offset: u64,
     ) {
@@ -148,9 +216,9 @@ impl Sqe {
     pub fn prep_splice(
         &mut self,
         user_data: u64,
-        fd_in: BorrowedFd,
+        fd_in: &Fd,
         off_in: u64,
-        fd_out: BorrowedFd,
+        fd_out: &Fd,
         off_out: u64,
         len: usize,
     ) {
@@ -167,7 +235,7 @@ impl Sqe {
     pub fn prep_write_fixed(
         &mut self,
         user_data: u64,
-        fd: BorrowedFd,
+        fd: &Fd,
         buffer: &iovec,
         offset: u64,
         buffer_index: u16,
@@ -182,7 +250,7 @@ impl Sqe {
     pub fn prep_read_fixed(
         &mut self,
         user_data: u64,
-        fd: BorrowedFd,
+        fd: &Fd,
         buffer: &mut iovec,
         offset: u64,
         buffer_index: u16,
@@ -197,7 +265,7 @@ impl Sqe {
     pub fn prep_openat(
         &mut self,
         user_data: u64,
-        fd: BorrowedFd,
+        fd: &Fd,
         path: &CStr,
         flags: OFlags,
         mode: Mode,
@@ -210,9 +278,15 @@ impl Sqe {
     }
 
     /// Unlike other methods we take an OwnedFd here - should not be used after.
-    pub fn prep_close(&mut self, user_data: u64, fd: OwnedFd) {
+    pub fn prep_close(&mut self, user_data: u64, fd: Fd) {
         self.opcode = Close;
-        self.fd = fd.into_raw_fd();
+        self.fd = fd.as_raw_fd();
+        // We want to prevent close being called on the fd when it goes out of
+        // the scope...
+        // Of course one could create this struct and never submit it to
+        // io_uring...
+        // TODO: revisit this when we make it a struct
+        mem::forget(fd);
         self.user_data.u64_ = user_data;
     }
 

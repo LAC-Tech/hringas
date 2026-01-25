@@ -1,23 +1,19 @@
-use hringas::{Cqe, IoUring};
+use hringas::{prep, Fd, IoUring, ReadBufHeap};
 use std::fs;
-use std::os::fd::AsFd;
 
 fn main() {
     let mut ring = IoUring::new(8).unwrap();
 
-    let fd = fs::File::open("README.md").unwrap();
-    let mut buf = vec![0; 1024];
+    let fd: Fd = fs::File::open("README.md").unwrap().into();
+    let buf = ReadBufHeap::<1024>::new();
 
-    let sqe = ring.get_sqe().expect("submission queue is full");
-    sqe.prep_read(0x42, fd.as_fd(), &mut buf, 0);
+    let req = prep::read(0x42, &fd, &buf, 0);
+    ring.enqueue(req).expect("submission queue is full");
 
-    // Note that the developer needs to ensure
-    // that the entry pushed into submission queue is valid (e.g. fd, buffer).
-    let Cqe { user_data, res, .. } = unsafe {
-        ring.submit_and_wait(1).unwrap();
-        ring.copy_cqe().expect("completion queue is empty")
-    };
+    ring.submit_and_wait(1).unwrap();
 
-    assert_eq!(user_data.u64_(), 0x42);
-    assert!(res >= 0, "read error: {}", res);
+    let cqe = ring.copy_cqe().expect("completion queue is empty");
+
+    assert_eq!(cqe.user_data.u64_(), 0x42);
+    assert!(cqe.res >= 0, "read error: {}", cqe.res);
 }

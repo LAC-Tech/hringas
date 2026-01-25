@@ -1,24 +1,22 @@
 #![no_std]
-use hringas::rustix::fd::AsFd;
+use hringas::prep;
 use hringas::rustix::fs::{openat, Mode, OFlags, CWD};
-use hringas::{Cqe, IoUring};
+use hringas::{Fd, IoUring, ReadBufStack};
 
 fn main() {
     let mut ring = IoUring::new(8).unwrap();
 
-    let fd = openat(CWD, "README.md", OFlags::RDONLY, Mode::empty()).unwrap();
-    let mut buf = [0; 1024];
+    let fd: Fd =
+        openat(CWD, "README.md", OFlags::RDONLY, Mode::empty()).unwrap().into();
 
-    let sqe = ring.get_sqe().expect("submission queue is full");
-    sqe.prep_read(0x42, fd.as_fd(), &mut buf, 0);
+    let buf = ReadBufStack::<1024>::new();
 
-    // Note that the developer needs to ensure
-    // that the entry pushed into submission queue is valid (e.g. fd, buffer).
-    let Cqe { user_data, res, .. } = unsafe {
-        ring.submit_and_wait(1).unwrap();
-        ring.copy_cqe().expect("completion queue is empty")
-    };
+    let req = prep::read(0x42, &fd, &buf, 0);
+    ring.enqueue(req).expect("submission queue is full");
 
-    assert_eq!(user_data.u64_(), 0x42);
-    assert!(res >= 0, "read error: {}", res);
+    ring.submit_and_wait(1).unwrap();
+    let cqe = ring.copy_cqe().expect("completion queue is empty");
+
+    assert_eq!(cqe.user_data.u64_(), 0x42);
+    assert!(cqe.res >= 0, "read error: {}", cqe.res);
 }

@@ -88,6 +88,87 @@ pub struct IoUring {
     cq: CompletionQueue,
 }
 
+pub struct Fd(OwnedFd);
+
+impl Fd {
+    fn as_raw_fd(&self) -> i32 {
+        self.0.as_raw_fd()
+    }
+
+    /// # Safety
+    ///
+    /// No other sqe must be writing to the fd
+    unsafe fn read(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
+impl<T: Into<OwnedFd>> From<T> for Fd {
+    fn from(fd: T) -> Self {
+        Fd(fd.into())
+    }
+}
+
+pub trait ReadBuf<const N: usize> {
+    fn as_ptr(&self) -> *const u8;
+
+    /// # Safety
+    ///
+    /// - No other sqe must be writing to the buffer
+    /// - You know the exact number of bytes that was written to the buffer, and
+    ///   it was less than `N`.
+    unsafe fn read(&self) -> &[u8; N];
+}
+
+#[derive(Debug)]
+pub struct ReadBufStack<'a, const N: usize> {
+    bytes: mem::MaybeUninit<[u8; N]>,
+    _phantom: marker::PhantomData<&'a IoUring>,
+}
+
+impl<'a, const N: usize> ReadBufStack<'a, N> {
+    pub fn new() -> Self {
+        Self {
+            bytes: mem::MaybeUninit::uninit(),
+            _phantom: marker::PhantomData,
+        }
+    }
+}
+
+impl<'a, const N: usize> ReadBuf<N> for ReadBufStack<'a, N> {
+    fn as_ptr(&self) -> *const u8 {
+        self.bytes.as_ptr().cast()
+    }
+
+    unsafe fn read(&self) -> &[u8; N] {
+        self.bytes.assume_init_ref()
+    }
+}
+
+#[derive(Debug)]
+pub struct ReadBufHeap<'a, const N: usize> {
+    bytes: Box<mem::MaybeUninit<[u8; N]>>,
+    _phantom: marker::PhantomData<&'a IoUring>,
+}
+
+impl<'a, const N: usize> ReadBufHeap<'a, N> {
+    pub fn new() -> Self {
+        Self {
+            bytes: Box::new(mem::MaybeUninit::uninit()),
+            _phantom: marker::PhantomData,
+        }
+    }
+}
+
+impl<'a, const N: usize> ReadBuf<N> for ReadBufHeap<'a, N> {
+    fn as_ptr(&self) -> *const u8 {
+        self.bytes.as_ptr().cast()
+    }
+    unsafe fn read(&self) -> &[u8; N] {
+        self.bytes.assume_init_ref()
+    }
+}
+
 impl IoUring {
     /// A friendly way to setup an io_uring, with default linux.io_uring_params.
     /// `entries` must be a power of two between 1 and 32768, although the
@@ -193,15 +274,18 @@ impl IoUring {
         self.fd.as_fd()
     }
 
-    pub fn enqueue(&mut self, prep: impl FnOnce(&mut Sqe)) -> Option<&mut Sqe> {
+    /// Enqueus a re
+    pub fn enqueue(&mut self, req: impl prep::Prep) -> Option<&mut Sqe> {
         let sqe = self.get_sqe()?;
-        prep(sqe);
+        req.prep(sqe);
         Some(sqe)
     }
 
     /// Returns a reference to a vacant SQE, or an error if the submission
     /// queue is full. We follow the implementation (and atomics) of
     /// liburing's `io_uring_get_sqe()` exactly.
+    ///
+    /// In general [`Self::enqueue`] is a cleaner way to accomplish this.
     pub fn get_sqe(&mut self) -> Option<&mut Sqe> {
         let head = self.shared.sq_head();
         // Remember that these head and tail offsets wrap around every four
@@ -227,22 +311,14 @@ impl IoUring {
     /// submitted sqes during this call. A value higher or lower, including
     /// 0, may be returned. Matches the implementation of
     /// `io_uring_submit()` in liburing.
-    ///
-    /// # Safety
-    ///
-    /// See [`Self::enter`].
-    pub unsafe fn submit(&mut self) -> io::Result<u32> {
+    pub fn submit(&mut self) -> io::Result<u32> {
         self.submit_and_wait(0)
     }
 
     /// Like [`Self::submit()`], but allows waiting for events as well.
     /// Returns the number of SQEs submitted.
     /// Matches the implementation of `io_uring_submit_and_wait()` in liburing.
-    ///
-    /// # Safety
-    ///
-    /// See [`Self::enter`].
-    pub unsafe fn submit_and_wait(&mut self, wait_nr: u32) -> io::Result<u32> {
+    pub fn submit_and_wait(&mut self, wait_nr: u32) -> io::Result<u32> {
         let submitted = self.flush_sq();
         let mut flags = IoringEnterFlags::empty();
 
@@ -258,12 +334,6 @@ impl IoUring {
 
     /// Tell the kernel we have submitted SQEs and/or want to wait for CQEs.
     /// Returns the number of SQEs submitted.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that any buffers or file descriptors referenced
-    /// by the SQEs remain valid until the kernel has completed the
-    /// requested operations.
     ///
     /// # Errors
     ///
@@ -291,13 +361,15 @@ impl IoUring {
     /// - [`Errno::INTR`] The operation was interrupted by a delivery of a
     ///   signal before it could complete. This can happen while waiting for
     ///   events with [`IoringEnterFlags::GETEVENTS`].
-    pub unsafe fn enter(
+    pub fn enter(
         &mut self,
         to_submit: u32,
         min_complete: u32,
         flags: IoringEnterFlags,
     ) -> io::Result<u32> {
-        io_uring_enter(self.fd.as_fd(), to_submit, min_complete, flags)
+        unsafe {
+            io_uring_enter(self.fd.as_fd(), to_submit, min_complete, flags)
+        }
     }
 
     /// Sync internal state with kernel ring state on the SQ side.
@@ -378,11 +450,7 @@ impl IoUring {
     /// now amortize the atomic store release to `cq.head` across the batch. See <https://github.com/axboe/liburing/issues/103#issuecomment-686665007>.
     /// Matches the implementation of `io_uring_peek_batch_cqe()` in liburing,
     /// but supports waiting.
-    ///
-    /// # Safety
-    ///
-    /// May call [`Self::enter`].
-    pub unsafe fn copy_cqes(
+    pub fn copy_cqes(
         &mut self,
         cqes: &mut [Cqe],
         wait_nr: u32,
@@ -402,11 +470,7 @@ impl IoUring {
     /// Returns a copy of an I/O completion, waiting for it if necessary, and
     /// advancing the CQ ring. A convenience method for `copy_cqes()` for
     /// when you don't need to batch or peek.
-    ///
-    /// # Safety
-    ///
-    /// May call [`Self::enter`].
-    pub unsafe fn copy_cqe(&mut self) -> io::Result<Cqe> {
+    pub fn copy_cqe(&mut self) -> io::Result<Cqe> {
         let mut cqes = [Cqe::default(); 1];
         loop {
             let count = self.copy_cqes(&mut cqes, 1)?;
@@ -672,7 +736,7 @@ mod zig_tests {
         unsafe { core::mem::transmute::<_, u16>(i) }
     }
 
-    fn temp_file(dir: &TempDir, path: &'static str) -> OwnedFd {
+    fn temp_file(dir: &TempDir, path: &'static str) -> Fd {
         fs::openat(
             fs::CWD,
             dir.path().join(path),
@@ -680,6 +744,7 @@ mod zig_tests {
             Mode::RUSR | Mode::WUSR,
         )
         .unwrap()
+        .into()
     }
 
     /// Helper to verify clean ring state
@@ -827,7 +892,7 @@ mod zig_tests {
         let mut ring = IoUring::new(4).unwrap();
 
         let tmp = tempdir().unwrap();
-        let fd = temp_file(&tmp, "test_io_uring_writev_fsync_readv");
+        let fd: Fd = temp_file(&tmp, "test_io_uring_writev_fsync_readv").into();
 
         let mut buffer_write: [u8; 128] = [42; 128];
         let iovecs_write = [iovec {
@@ -843,23 +908,22 @@ mod zig_tests {
 
         {
             let sqe = ring.get_sqe().unwrap();
-            sqe.prep_writev(0xdddddddd, fd.as_fd(), &iovecs_write, 17);
+            sqe.prep_writev(0xdddddddd, &fd, &iovecs_write, 17);
             assert_eq!(sqe.opcode, IoringOp::Writev);
             assert_eq!(sqe.off(), 17);
             sqe.flags.set(IoringSqeFlags::IO_LINK, true);
         }
         {
-            let prep =
-                prep::fsync(0xeeeeeeee, fd.as_fd(), ReadWriteFlags::empty());
+            let prep = prep::fsync(0xeeeeeeee, &fd, ReadWriteFlags::empty());
             let sqe = ring.enqueue(prep).unwrap();
 
             assert_eq!(sqe.opcode, IoringOp::Fsync);
-            assert_eq!(sqe.fd, fd.as_raw_fd());
+            assert_eq!(sqe.fd, *&fd.as_raw_fd());
             sqe.flags.set(IoringSqeFlags::IO_LINK, true);
         }
         {
             let sqe = ring.get_sqe().unwrap();
-            sqe.prep_readv(0xffffffff, fd.as_fd(), &mut iovecs_read, 17);
+            sqe.prep_readv(0xffffffff, &fd, &mut iovecs_read, 17);
             assert_eq!(sqe.opcode, IoringOp::Readv);
             assert_eq!(sqe.off(), 17);
         }
@@ -898,34 +962,36 @@ mod zig_tests {
         let tmp = tempdir().unwrap();
         let fd = temp_file(&tmp, "test_io_uring_write_read");
 
-        const BUFFER_WRITE: [u8; 20] = [97; 20];
-        let mut buffer_read = [98u8; 20];
+        const BUF_LEN: usize = 20;
+        const BUFFER_WRITE: [u8; BUF_LEN] = [97; BUF_LEN];
+        let buffer_read = ReadBufStack::<BUF_LEN>::new();
 
         let sqe_write = ring.get_sqe().unwrap();
-        sqe_write.prep_write(0x11111111, fd.as_fd(), &BUFFER_WRITE, 10);
+        sqe_write.prep_write(0x11111111, &fd, &BUFFER_WRITE, 10);
         assert_eq!(sqe_write.opcode, IoringOp::Write);
         assert_eq!(sqe_write.off(), 10);
         sqe_write.flags.set(IoringSqeFlags::IO_LINK, true);
 
-        let sqe_read = ring.get_sqe().unwrap();
-        sqe_read.prep_read(0x22222222, fd.as_fd(), &mut buffer_read, 10);
+        let sqe_read = ring
+            .enqueue(prep::read(0x22222222, &fd, &buffer_read, 10))
+            .unwrap();
         assert_eq!(sqe_read.opcode, IoringOp::Read);
         assert_eq!(sqe_read.off(), 10);
 
-        assert_eq!(unsafe { ring.submit() }, Ok(2));
+        assert_eq!(ring.submit(), Ok(2));
 
-        let cqe_write = unsafe { ring.copy_cqe() }.unwrap();
-        let cqe_read = unsafe { ring.copy_cqe() }.unwrap();
+        let cqe_write = ring.copy_cqe().unwrap();
+        let cqe_read = ring.copy_cqe().unwrap();
 
         assert_eq!(cqe_write.user_data.u64_(), 0x11111111);
         assert_eq!(cqe_write.res, BUFFER_WRITE.len() as i32);
         assert_eq!(cqe_write.flags, IoringCqeFlags::empty());
 
         assert_eq!(cqe_read.user_data.u64_(), 0x22222222);
-        assert_eq!(cqe_read.res, buffer_read.len() as i32);
+        assert_eq!(cqe_read.res, BUF_LEN as i32);
         assert_eq!(cqe_read.flags, IoringCqeFlags::empty());
 
-        assert_eq!(BUFFER_WRITE, buffer_read);
+        assert_eq!(&BUFFER_WRITE, unsafe { buffer_read.read() });
         assert_ring_clean(&mut ring);
     }
 
@@ -943,23 +1009,27 @@ mod zig_tests {
         let fd_src = temp_file(&tmp, "test_io_uring_splice_src");
         let fd_dst = temp_file(&tmp, "test_io_uring_splice_dst");
 
-        let buffer_write = [97u8; 20];
-        let mut buffer_read = [98u8; 20];
+        const BUF_LEN: usize = 20;
+        let buffer_write = [97u8; BUF_LEN];
+        let buffer_read = ReadBufStack::<BUF_LEN>::new();
         assert_eq!(
-            rustix::io::write(fd_src.as_fd(), &buffer_write),
+            rustix::io::write(unsafe { fd_src.read() }, &buffer_write),
             Ok(buffer_write.len())
         );
 
         let (reading_fd_pipe, writing_fd_pipe) = rustix::pipe::pipe().unwrap();
+
+        let reading_fd_pipe: Fd = reading_fd_pipe.into();
+        let writing_fd_pipe: Fd = writing_fd_pipe.into();
         let pipe_offset = u64::MAX;
 
         {
             let sqe = ring.get_sqe().unwrap();
             sqe.prep_splice(
                 0x11111111,
-                fd_src.as_fd(),
+                &fd_src,
                 0,
-                writing_fd_pipe.as_fd(),
+                &writing_fd_pipe,
                 pipe_offset,
                 buffer_write.len(),
             );
@@ -972,9 +1042,9 @@ mod zig_tests {
             let sqe = ring.get_sqe().unwrap();
             sqe.prep_splice(
                 0x22222222,
-                reading_fd_pipe.as_fd(),
+                &reading_fd_pipe,
                 pipe_offset,
-                fd_dst.as_fd(),
+                &fd_dst,
                 10,
                 buffer_write.len(),
             );
@@ -988,8 +1058,8 @@ mod zig_tests {
         }
 
         {
-            let sqe = ring.get_sqe().unwrap();
-            sqe.prep_read(0x33333333, fd_dst.as_fd(), &mut buffer_read, 10);
+            let req = prep::read(0x33333333, &fd_dst, &buffer_read, 10);
+            let sqe = ring.enqueue(req).unwrap();
             assert_eq!(sqe.opcode, IoringOp::Read);
             assert_eq!(sqe.off(), 10);
         }
@@ -1010,10 +1080,10 @@ mod zig_tests {
         assert_eq!(cqe_splice_from_pipe.flags, IoringCqeFlags::empty());
 
         assert_eq!(cqe_read.user_data.u64_(), 0x33333333);
-        assert_eq!(cqe_read.res, buffer_read.len() as i32);
+        assert_eq!(cqe_read.res, BUF_LEN as i32);
         assert_eq!(cqe_read.flags, IoringCqeFlags::empty());
 
-        assert_eq!(&buffer_write, &buffer_read);
+        assert_eq!(&buffer_write, unsafe { buffer_read.read() });
         assert_ring_clean(&mut ring);
     }
 
@@ -1043,13 +1113,13 @@ mod zig_tests {
         unsafe { ring.register_buffers(&buffers) }.unwrap();
 
         let sqe_write = ring.get_sqe().unwrap();
-        sqe_write.prep_write_fixed(0x45454545, fd.as_fd(), &buffers[0], 3, 0);
+        sqe_write.prep_write_fixed(0x45454545, &fd, &buffers[0], 3, 0);
         assert_eq!(sqe_write.opcode, IoringOp::WriteFixed);
         assert_eq!(sqe_write.off(), 3);
         sqe_write.flags.set(IoringSqeFlags::IO_LINK, true);
 
         let sqe_read = ring.get_sqe().unwrap();
-        sqe_read.prep_read_fixed(0x12121212, fd.as_fd(), &mut buffers[1], 0, 1);
+        sqe_read.prep_read_fixed(0x12121212, &fd, &mut buffers[1], 0, 1);
         assert_eq!(sqe_read.opcode, IoringOp::ReadFixed);
         assert_eq!(sqe_read.off(), 0);
 
@@ -1081,13 +1151,14 @@ mod zig_tests {
     fn openat() {
         let mut ring = IoUring::new(1).unwrap();
         let tmp = tempfile::TempDir::new().unwrap();
-        let tmp = fs::openat(
+        let tmp: Fd = fs::openat(
             fs::CWD,
             tmp.path(),
             OFlags::RDONLY | OFlags::CLOEXEC,
             Mode::empty(),
         )
-        .unwrap();
+        .unwrap()
+        .into();
 
         let path = c"test_io_uring_openat";
 
@@ -1095,7 +1166,7 @@ mod zig_tests {
         let mode = Mode::from(0o666);
 
         let sqe = ring.get_sqe().unwrap();
-        sqe.prep_openat(0x33333333, tmp.as_fd(), path, flags, mode);
+        sqe.prep_openat(0x33333333, &tmp, path, flags, mode);
         assert_eq!(sqe.opcode, IoringOp::Openat);
         assert_eq!(sqe.flags, IoringSqeFlags::empty());
         assert_eq!(ioprio_to_u16(sqe.ioprio), 0);

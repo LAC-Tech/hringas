@@ -64,6 +64,15 @@ Limiting ourselves to the orderings found in `IoUring.zig`. I will quote cpprefe
 
 ## Safety
 
+`io_uring` performs operations asynchronously in a way rust is unable to reason about.
+
+The general philosophy with Hringas is:
+
+- it's "safe" to create SQEs
+- it's "unsafe" to submit them
+- it's "safe" to get back a CQE
+- it's "unsafe" to read data from file descriptors and buffers submitted to the kernel
+
 ### Safe boundary around Shared Memory
 
 If we follow the correct offsets, and atomic reads/writes, of the shared memory, perhaps that could form a safe boundary lower down in the code

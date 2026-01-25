@@ -77,6 +77,12 @@ pub struct Cqe {
     pub flags: IoringCqeFlags,
 }
 
+impl Cqe {
+    pub fn user_data(&self) -> u64 {
+        self.user_data.u64_()
+    }
+}
+
 /// The main entry point to the library.
 #[derive(Debug)]
 pub struct IoUring {

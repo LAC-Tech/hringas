@@ -98,7 +98,7 @@ impl Fd {
     /// # Safety
     ///
     /// No other sqe must be writing to the fd
-    unsafe fn read(&self) -> BorrowedFd<'_> {
+    pub unsafe fn read(&self) -> BorrowedFd<'_> {
         self.0.as_fd()
     }
 }
@@ -115,9 +115,9 @@ pub trait ReadBuf<const N: usize> {
     /// # Safety
     ///
     /// - No other sqe must be writing to the buffer
-    /// - You know the exact number of bytes that was written to the buffer, and
-    ///   it was less than `N`.
-    unsafe fn read(&self) -> &[u8; N];
+    /// - You know the number of bytes `len` thatr was written to the buffer,
+    ///   and it was less than `N`.
+    unsafe fn read(&self, len: usize) -> &[u8];
 }
 
 #[derive(Debug)]
@@ -140,8 +140,8 @@ impl<'a, const N: usize> ReadBuf<N> for ReadBufStack<'a, N> {
         self.bytes.as_ptr().cast()
     }
 
-    unsafe fn read(&self) -> &[u8; N] {
-        self.bytes.assume_init_ref()
+    unsafe fn read(&self, len: usize) -> &[u8] {
+        &self.bytes.assume_init_ref()[0..len]
     }
 }
 
@@ -164,8 +164,8 @@ impl<'a, const N: usize> ReadBuf<N> for ReadBufHeap<'a, N> {
     fn as_ptr(&self) -> *const u8 {
         self.bytes.as_ptr().cast()
     }
-    unsafe fn read(&self) -> &[u8; N] {
-        self.bytes.assume_init_ref()
+    unsafe fn read(&self, len: usize) -> &[u8] {
+        &self.bytes.assume_init_ref()[0..len]
     }
 }
 
@@ -367,9 +367,8 @@ impl IoUring {
         min_complete: u32,
         flags: IoringEnterFlags,
     ) -> io::Result<u32> {
-        unsafe {
-            io_uring_enter(self.fd.as_fd(), to_submit, min_complete, flags)
-        }
+        // SAFETY: we are only passing in a borrowed fd of the ring
+        unsafe { io_uring_enter(self.fd(), to_submit, min_complete, flags) }
     }
 
     /// Sync internal state with kernel ring state on the SQ side.
@@ -991,7 +990,7 @@ mod zig_tests {
         assert_eq!(cqe_read.res, BUF_LEN as i32);
         assert_eq!(cqe_read.flags, IoringCqeFlags::empty());
 
-        assert_eq!(&BUFFER_WRITE, unsafe { buffer_read.read() });
+        assert_eq!(&BUFFER_WRITE, unsafe { buffer_read.read(BUF_LEN) });
         assert_ring_clean(&mut ring);
     }
 
@@ -1083,7 +1082,7 @@ mod zig_tests {
         assert_eq!(cqe_read.res, BUF_LEN as i32);
         assert_eq!(cqe_read.flags, IoringCqeFlags::empty());
 
-        assert_eq!(&buffer_write, unsafe { buffer_read.read() });
+        assert_eq!(&buffer_write, unsafe { buffer_read.read(BUF_LEN) });
         assert_ring_clean(&mut ring);
     }
 
